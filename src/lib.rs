@@ -129,4 +129,136 @@ mod tests {
         let deser: FlashPlan = serde_json::from_str(&json).unwrap();
         assert_eq!(plan, deser);
     }
+
+    // --- Preflight boundary values ------------------------------------
+
+    #[test]
+    fn battery_passes_at_exact_minimum() {
+        // Guard is `>= MIN_BATTERY_PCT`. If a future refactor flips
+        // to `>`, flashing at exactly 50% would silently fail.
+        let checks = preflight_checks(50, true, 4096);
+        let battery = checks.iter().find(|c| c.name == "battery").unwrap();
+        assert!(battery.passed);
+        assert!(battery.message.contains("Battery at 50%"));
+        assert!(battery.message.contains(">= 50%"));
+    }
+
+    #[test]
+    fn battery_fails_one_below_minimum() {
+        // 49 — the tight negative boundary. Together with the
+        // passes-at-50 test this pins the `>= 50` comparison.
+        let checks = preflight_checks(49, true, 4096);
+        let battery = checks.iter().find(|c| c.name == "battery").unwrap();
+        assert!(!battery.passed);
+        assert!(battery.message.contains("Battery at 49%"));
+    }
+
+    #[test]
+    fn battery_fails_at_zero() {
+        let checks = preflight_checks(0, true, 4096);
+        let battery = checks.iter().find(|c| c.name == "battery").unwrap();
+        assert!(!battery.passed);
+        assert!(battery.message.contains("Battery at 0%"));
+    }
+
+    #[test]
+    fn storage_passes_at_exact_minimum() {
+        // Same `>=` guard on storage. Flashing with exactly 2048 MB
+        // free must pass.
+        let checks = preflight_checks(80, true, 2048);
+        let storage = checks.iter().find(|c| c.name == "storage").unwrap();
+        assert!(storage.passed);
+        assert!(storage.message.contains("2048 MB free"));
+        assert!(storage.message.contains(">= 2048 MB"));
+    }
+
+    #[test]
+    fn storage_fails_one_below_minimum() {
+        let checks = preflight_checks(80, true, 2047);
+        let storage = checks.iter().find(|c| c.name == "storage").unwrap();
+        assert!(!storage.passed);
+        assert!(storage.message.contains("2047 MB free"));
+    }
+
+    #[test]
+    fn bootloader_pass_message_format() {
+        // The pass-branch message had no assertion before. A regex
+        // typo in either branch would silently ship.
+        let checks = preflight_checks(80, true, 4096);
+        let bl = checks.iter().find(|c| c.name == "bootloader").unwrap();
+        assert!(bl.passed);
+        assert_eq!(bl.message, "Bootloader is unlocked");
+    }
+
+    #[test]
+    fn all_checks_can_fail_together() {
+        // Integration: all three failure branches fire independently
+        // and the returned Vec still has length 3 (never short-
+        // circuits on the first failure).
+        let checks = preflight_checks(10, false, 100);
+        assert_eq!(checks.len(), 3);
+        assert!(checks.iter().all(|c| !c.passed));
+    }
+
+    #[test]
+    fn check_order_is_battery_bootloader_storage() {
+        // UI renders in the order returned. If a future refactor
+        // reorders the push()es, dashboards / log parsers would
+        // break silently — pin the sequence.
+        let checks = preflight_checks(80, true, 4096);
+        assert_eq!(checks.len(), 3);
+        assert_eq!(checks[0].name, "battery");
+        assert_eq!(checks[1].name, "bootloader");
+        assert_eq!(checks[2].name, "storage");
+    }
+
+    // --- Serde round-trips for the smaller types ----------------------
+
+    #[test]
+    fn partition_flash_round_trip() {
+        // PartitionFlash is serialized independently (as part of
+        // plan logs). Pin each field by name + value roundtrip so
+        // a rename would fail loudly.
+        let p = PartitionFlash {
+            name: "vendor".into(),
+            image_path: "/tmp/vendor.img".into(),
+            size: u64::MAX,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"name\":\"vendor\""));
+        assert!(json.contains("\"image_path\":\"/tmp/vendor.img\""));
+        let back: PartitionFlash = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn preflight_check_round_trip() {
+        // PreflightCheck is what external observers consume (JSON
+        // on stdout or event bus). Pin its wire shape.
+        let original = PreflightCheck {
+            name: "battery".into(),
+            passed: false,
+            message: "Battery at 10% — must be >= 50%".into(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"passed\":false"));
+        let back: PreflightCheck = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn flash_plan_empty_partitions_roundtrip() {
+        // A plan with zero partitions (pure backup-only case) must
+        // still serialize cleanly and deserialize to an empty Vec,
+        // not Option<Vec> collapsed to null.
+        let plan = FlashPlan {
+            device: "emulator".into(),
+            partitions: vec![],
+            backup_first: true,
+        };
+        let json = serde_json::to_string(&plan).unwrap();
+        assert!(json.contains("\"partitions\":[]"));
+        let back: FlashPlan = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, plan);
+    }
 }
