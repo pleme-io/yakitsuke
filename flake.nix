@@ -2,48 +2,28 @@
   description = "yakitsuke — Safe ROM Flasher";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-25.11";
+    crate2nix.url = "github:nix-community/crate2nix";
+    flake-utils.url = "github:numtide/flake-utils";
     substrate = {
       url = "github:pleme-io/substrate";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    devenv = {
-      url = "github:cachix/devenv";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
-  outputs = { self, nixpkgs, substrate, devenv }:
-  let
-    systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-    forAllSystems = nixpkgs.lib.genAttrs systems;
-  in {
-    packages = forAllSystems (system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-    in {
-      default = pkgs.rustPlatform.buildRustPackage {
-        pname = "yakitsuke";
-        version = "0.1.0";
-        src = ./.;
-        cargoLock.lockFile = ./Cargo.lock;
-        doCheck = false;
-      };
-    });
-
-    overlays.default = final: prev: {
-      yakitsuke = self.packages.${final.system}.default;
+  outputs = {
+    self,
+    nixpkgs,
+    crate2nix,
+    flake-utils,
+    substrate,
+    ...
+  }:
+    (import "${substrate}/lib/rust-tool-release-flake.nix" {
+      inherit nixpkgs crate2nix flake-utils;
+    }) {
+      toolName = "yakitsuke";
+      src = self;
+      repo = "pleme-io/yakitsuke";
     };
-
-    devShells = forAllSystems (system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-    in {
-      default = devenv.lib.mkShell {
-        inputs = { inherit nixpkgs devenv; };
-        inherit pkgs;
-        modules = [
-          (import "${substrate}/lib/devenv/rust.nix")
-        ];
-      };
-    });
-  };
 }
